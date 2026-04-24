@@ -1,0 +1,82 @@
+@import url('https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-serif: 'Instrument Serif', Georgia, serif;
+  --font-sans: 'Inter', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', monospace;
+
+  --color-paper: #FFFFFF;
+  --color-obsidian: #171717;
+  --color-sage: #f2572b;
+  --color-slate-muted: #737373;
+  --color-border: #E5E5E5;
+  --color-muted: #F5F5F5;
+  --color-ring: #f2572b;
+
+  --radius-xs: 0.25rem;
+  --radius-sm: 0.5rem;
+  --radius-md: 1rem;
+  --radius-lg: 1.5rem;
+  --radius-xl: 3rem;
+}
+
+:root {
+  --background: #FFFFFF;
+  --foreground: #171717;
+  --primary: #171717;
+  --primary-foreground: #FFFFFF;
+  --secondary: #f2572b;
+  --secondary-foreground: #FFFFFF;
+  --muted: #F5F5F5;
+  --muted-foreground: #737373;
+  --accent: #f2572b;
+  --accent-foreground: #FFFFFF;
+  --border: #E5E5E5;
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply font-sans antialiased bg-paper text-obsidian selection:bg-sage/20 selection:text-obsidian;
+  }
+  h1, h2, h3, h4, h5, h6 {
+    @apply font-serif;
+  }
+}
+
+/* Custom Utilities */
+@layer utilities {
+  .text-luxury {
+    @apply font-serif italic tracking-tight;
+  }
+  .caps-technical {
+    @apply font-sans text-[10px] font-bold tracking-[0.2em] uppercase;
+  }
+  .glass {
+    @apply backdrop-blur-md bg-white/70 border border-white/20;
+  }
+}
+
+/* Page Transitions */
+.page-enter {
+  opacity: 0;
+  transform: translateY(20px);
+}
+.page-enter-active {
+  opacity: 1;
+  transform: translateY(0);
+  transition: opacity 0.5s ease, transform 0.5s ease;
+}
+
+/* Medical Pulse for Clinical Accents */
+@keyframes clinical-pulse {
+  0% { transform: scale(1); opacity: 0.8; }
+  50% { transform: scale(1.1); opacity: 1; }
+  100% { transform: scale(1); opacity: 0.8; }
+}
+.animate-clinical {
+  animation: clinical-pulse 2s infinite ease-in-out;
+}

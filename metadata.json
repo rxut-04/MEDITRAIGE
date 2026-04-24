@@ -1,0 +1,5 @@
+{
+  "name": "MediTriage",
+  "description": "Stunning AI-powered medical triage assistant with a warm clinical paper theme.",
+  "requestFramePermissions": ["camera", "microphone"]
+}
