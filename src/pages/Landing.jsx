@@ -1,8 +1,10 @@
 import React, { useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { motion, useScroll, useTransform } from 'motion/react'
+import { LayoutGroup, motion, useReducedMotion, useScroll, useTransform } from 'motion/react'
 import { Activity, ShieldCheck, Heart, Clock, ArrowRight, Zap, ChevronRight, Menu, Plus } from 'lucide-react'
 import ArtisticBackground from '../components/ui/dynamic-background'
+import { TextRotate } from '../components/ui/text-rotate'
+import ThemeToggle from '../components/ThemeToggle'
 import { IMAGES, BRAND } from '../constants'
 import { cn } from '../lib/utils'
 
@@ -28,6 +30,7 @@ const FadeIn = ({ children, delay = 0, className }) => (
 export default function Landing() {
   const navigate = useNavigate()
   const targetRef = useRef(null)
+  const prefersReducedMotion = useReducedMotion()
   
   const { scrollYProgress } = useScroll({
     target: targetRef,
@@ -61,23 +64,38 @@ export default function Landing() {
           </span>
         </div>
 
-        <div className="hidden md:flex items-center gap-12">
-          {['Philosophy', 'Facilities', 'Science'].map(item => (
-            <a key={item} href={`#${item.toLowerCase()}`} className="caps-technical text-obsidian/60 hover:text-sage transition-colors">
-              {item}
-            </a>
-          ))}
-          <button 
-            onClick={() => navigate('/triage')}
-            className="px-8 py-2.5 bg-obsidian text-paper rounded-full caps-technical hover:bg-sage hover:text-paper transition-all transform hover:-translate-y-0.5 active:translate-y-0"
-          >
-            Enter {BRAND.name}
+        <div className="flex items-center gap-4 md:gap-8">
+          <div className="hidden md:flex items-center gap-12">
+            {['Philosophy', 'Facilities', 'Science'].map(item => (
+              <button
+                key={item}
+                type="button"
+                onClick={() =>
+                  item === 'Science'
+                    ? navigate('/science')
+                    : document
+                        .getElementById(item.toLowerCase())
+                        ?.scrollIntoView({ behavior: 'smooth' })
+                }
+                className="caps-technical text-obsidian/60 hover:text-sage transition-colors"
+              >
+                {item}
+              </button>
+            ))}
+            <button 
+              onClick={() => navigate('/triage')}
+              className="px-8 py-2.5 bg-obsidian text-paper rounded-full caps-technical hover:bg-sage hover:text-paper transition-all transform hover:-translate-y-0.5 active:translate-y-0"
+            >
+              Enter {BRAND.name}
+            </button>
+          </div>
+
+          <ThemeToggle />
+
+          <button className="md:hidden text-obsidian" aria-label="Open menu">
+            <Menu size={24} />
           </button>
         </div>
-
-        <button className="md:hidden text-obsidian">
-          <Menu size={24} />
-        </button>
       </nav>
 
       {/* Hero */}
@@ -96,10 +114,38 @@ export default function Landing() {
               {BRAND.tagline}
             </div>
 
-            <h1 className="text-5xl md:text-8xl font-semibold text-obsidian leading-[0.9] mb-10 select-none tracking-tighter">
-              Clinical <br />
-              <span className="text-luxury">Intelligence.</span>
-            </h1>
+            <LayoutGroup>
+              <motion.h1
+                layout
+                className="text-5xl md:text-8xl font-semibold text-obsidian leading-[0.9] mb-10 select-none tracking-tighter flex flex-col items-center"
+              >
+                <motion.span
+                  layout
+                  transition={{ type: 'spring', damping: 30, stiffness: 400 }}
+                >
+                  Clinical
+                </motion.span>
+                <TextRotate
+                  texts={[
+                    'Intelligence.',
+                    'Precision.',
+                    'Clarity.',
+                    'Assurance.',
+                    'Empathy.',
+                  ]}
+                  mainClassName="justify-center font-serif italic tracking-tight text-sage"
+                  splitLevelClassName="overflow-hidden pr-1 pb-2 md:pb-4"
+                  staggerFrom="last"
+                  staggerDuration={0.025}
+                  initial={{ y: '100%', opacity: 0 }}
+                  animate={{ y: 0, opacity: 1 }}
+                  exit={{ y: '-120%', opacity: 0 }}
+                  transition={{ type: 'spring', damping: 30, stiffness: 400 }}
+                  rotationInterval={2600}
+                  auto={!prefersReducedMotion}
+                />
+              </motion.h1>
+            </LayoutGroup>
 
             <p className="text-lg md:text-2xl text-obsidian/70 max-w-[600px] mx-auto mb-12 font-medium leading-relaxed italic">
               {BRAND.copy.hero_sub}
@@ -114,7 +160,11 @@ export default function Landing() {
                 <ArrowRight size={16} className="transition-transform group-hover:translate-x-1" />
               </button>
               
-              <button className="px-10 py-5 border border-obsidian/10 rounded-full text-xs font-bold tracking-[0.2em] uppercase hover:bg-obsidian/5 transition-colors">
+              <button
+                type="button"
+                onClick={() => navigate('/science')}
+                className="px-10 py-5 border border-obsidian/10 text-obsidian rounded-full text-xs font-bold tracking-[0.2em] uppercase hover:bg-obsidian/5 transition-colors"
+              >
                 The Science
               </button>
             </div>
@@ -133,7 +183,7 @@ export default function Landing() {
       </section>
 
       {/* Philosophy Section */}
-      <section id="philosophy" className="py-32 px-6 lg:px-24 bg-white">
+      <section id="philosophy" className="py-32 px-6 lg:px-24 bg-paper">
         <div className="max-w-7xl mx-auto grid grid-cols-1 lg:grid-cols-2 gap-24 items-center">
           <FadeIn>
             <SectionLabel>Our Philosophy</SectionLabel>
@@ -171,7 +221,7 @@ export default function Landing() {
 
       {/* Facilities - Premium Horizontal Scroll */}
       <section id="facilities" className="bg-paper relative" ref={targetRef}>
-        <div className="h-[300vh]">
+        <div className="h-[180vh]">
           <div className="sticky top-0 h-screen flex flex-col justify-center overflow-hidden">
             <div className="px-6 lg:px-24 mb-12">
               <div className="max-w-7xl mx-auto flex flex-col md:flex-row md:items-end justify-between gap-8">
@@ -186,7 +236,7 @@ export default function Landing() {
             </div>
 
             <motion.div 
-              style={{ x: useTransform(scrollYProgress, [0.1, 0.9], ["0%", "-75%"]) }}
+              style={{ x: useTransform(scrollYProgress, [0, 1], ["0%", "-75%"]) }}
               className="flex gap-12 px-6 lg:px-24 w-max"
             >
               {facilities.map((f, i) => (
@@ -237,7 +287,7 @@ export default function Landing() {
             </motion.div>
 
             {/* Progress indicator */}
-            <div className="absolute bottom-12 left-6 lg:left-24 right-6 lg:right-24 h-[1px] bg-obsidian/5 overflow-hidden">
+            <div className="mt-12 mx-6 lg:mx-24 h-[2px] bg-obsidian/5 overflow-hidden rounded-full">
                <motion.div 
                 style={{ scaleX: scrollYProgress, transformOrigin: "left" }}
                 className="h-full bg-sage w-full"
@@ -288,7 +338,26 @@ export default function Landing() {
           <div className="grid grid-cols-2 md:grid-cols-3 gap-20">
              <div className="flex flex-col gap-4">
                 <div className="caps-technical text-sage">Experience</div>
-                {['Approach', 'Facilities', 'Science', 'Ethics'].map(l => <a key={l} href="#" className="text-sm text-obsidian/60 hover:text-obsidian">{l}</a>)}
+                {['Approach', 'Facilities', 'Science', 'Ethics'].map((l) =>
+                  l === 'Science' ? (
+                    <button
+                      key={l}
+                      type="button"
+                      onClick={() => navigate('/science')}
+                      className="text-left text-sm text-obsidian/60 hover:text-obsidian"
+                    >
+                      {l}
+                    </button>
+                  ) : (
+                    <a
+                      key={l}
+                      href="#"
+                      className="text-sm text-obsidian/60 hover:text-obsidian"
+                    >
+                      {l}
+                    </a>
+                  )
+                )}
              </div>
              <div className="flex flex-col gap-4">
                 <div className="caps-technical text-sage">Legals</div>

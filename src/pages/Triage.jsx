@@ -1,456 +1,990 @@
-import { useState, useRef, useEffect } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { motion, AnimatePresence } from 'motion/react'
-import { 
-  ArrowLeft, 
-  MessageCircle, 
-  ShieldCheck, 
-  Activity, 
-  Clock, 
-  Plus, 
-  Send, 
-  Calendar,
+import { AnimatePresence, motion } from 'motion/react'
+import {
+  ArrowLeft,
+  Download,
+  Menu,
+  MessageSquare,
+  PanelLeftClose,
+  PanelLeftOpen,
+  Plus,
+  Trash2,
+  Video,
   X,
-  CreditCard,
-  User,
-  Info,
-  AlertCircle,
-  AlertTriangle
 } from 'lucide-react'
 import MessageBubble from '../components/MessageBubble'
-import TriageCard from '../components/TriageCard'
 import AIVideoAvatar from '../components/AIVideoAvatar'
+import ThemeToggle from '../components/ThemeToggle'
+import TriageOptionCard from '../components/TriageOptionCard'
+import UrgencyBadge from '../components/UrgencyBadge'
+import AccountMenu from '../components/AccountMenu'
+import CareRoutingCard from '../components/CareRoutingCard'
+import LanguageToggle from '../components/LanguageToggle'
+import { MediTriageChatInput } from '../components/ui/v0-ai-chat'
 import { BRAND } from '../constants'
 import { cn } from '../lib/utils'
+import { useAuth } from '../lib/AuthProvider'
+import { useLocale } from '../lib/LocaleProvider'
+import { useBrand } from '../lib/BrandProvider'
+import {
+  deleteConversationRow,
+  fetchConversations,
+  saveAssessmentExport,
+  saveMessage,
+  upsertConversation,
+} from '../lib/cloudStore'
+import {
+  parseFollowUp,
+  parseTriageResult,
+  stripProtocolBlocks,
+} from '../lib/triageIntake'
 
-const FLOWISE_URL = import.meta.env.VITE_FLOWISE_URL || 'https://cloud.flowiseai.com/api/v1/prediction/682517ef-8bf4-487c-916b-b72028e7d739'
-const BEY_AGENT_ID = import.meta.env.VITE_BEY_AGENT_ID || 'f30d7eef-6e71-433f-938d-cecdd8c0b653'
-const IS_TEST_MODE = import.meta.env.VITE_TEST_MODE === 'true' // Only test mode if explicitly requested via env
-const SESSION_ID = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).substring(7)
+const HISTORY_KEY = 'meditriage-conversations-v3'
+const DEFAULT_GREETING =
+  "Welcome to MediTriage. I'm your AI Clinical Liaison. Tell me what's going on — when you're ready, describe your symptoms and I'll ask clear follow-ups."
 
-// Parse triage result from agent response
-function parseTriageResult(text) {
-  if (!text) return null
-  const match = text.match(/---TRIAGE_RESULT---([\s\S]*?)---END_TRIAGE---/)
-  if (!match) return null
-
-  const block = match[1]
-  const get = (key) => {
-    const m = block.match(new RegExp(`${key}:\\s*(.+)`, 'i'))
-    return m ? m[1].trim() : ''
+/** Always UUID-shaped so rows map cleanly onto Postgres uuid columns. */
+function makeId() {
+  if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+    return crypto.randomUUID()
   }
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (char) => {
+    const rand = (Math.random() * 16) | 0
+    const value = char === 'x' ? rand : (rand & 0x3) | 0x8
+    return value.toString(16)
+  })
+}
 
+function createConversation(greeting = DEFAULT_GREETING, title = 'New assessment') {
   return {
-    urgency: get('URGENCY'),
-    summary: get('SUMMARY'),
-    reasoning: get('REASONING'),
-    guidance: get('GUIDANCE'),
-    watchFor: get('WATCH_FOR'),
+    id: makeId(),
+    title,
+    updatedAt: Date.now(),
+    triageResult: null,
+    assessment: null,
+    pendingFollowUp: null,
+    multiSelections: [],
+    messages: [
+      {
+        id: makeId(),
+        role: 'assistant',
+        content: greeting,
+        stream: true,
+      },
+    ],
   }
 }
 
-const BookingDrawer = ({ isOpen, onClose }) => (
-  <AnimatePresence>
-    {isOpen && (
-      <>
-        <motion.div 
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          exit={{ opacity: 0 }}
-          onClick={onClose}
-          className="fixed inset-0 bg-obsidian/40 backdrop-blur-sm z-[200]"
-        />
-        <motion.div 
-          initial={{ x: '100%' }}
-          animate={{ x: 0 }}
-          exit={{ x: '100%' }}
-          transition={{ type: "spring", damping: 25, stiffness: 200 }}
-          className="fixed right-0 top-0 h-full w-full max-w-[480px] bg-paper shadow-2xl z-[201] p-12 overflow-y-auto"
+function normalizeConversation(conversation) {
+  return {
+    ...conversation,
+    assessment: conversation.assessment || null,
+    pendingFollowUp: conversation.pendingFollowUp || null,
+    multiSelections: conversation.multiSelections || [],
+    messages: (conversation.messages || []).map((message) => ({
+      ...message,
+      stream: false,
+    })),
+  }
+}
+
+function loadConversations() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]')
+    if (Array.isArray(saved) && saved.length) {
+      return saved.map(normalizeConversation)
+    }
+  } catch {
+    // Corrupt or unavailable storage should not prevent a new assessment.
+  }
+  return [createConversation()]
+}
+
+function ConversationSidebar({
+  open,
+  conversations,
+  activeId,
+  onToggle,
+  onHome,
+  onNew,
+  onSelect,
+  onDelete,
+  brandName,
+  newLabel,
+  recentLabel,
+  clinicHref,
+  clinicLabel,
+}) {
+  return (
+    <aside
+      className={cn(
+        'relative z-40 flex h-full shrink-0 flex-col border-r border-obsidian/10 bg-muted transition-[width] duration-300',
+        open ? 'w-[280px]' : 'w-[72px]'
+      )}
+    >
+      <div
+        className={cn(
+          'flex h-16 shrink-0 items-center border-b border-obsidian/10',
+          open ? 'justify-between px-4' : 'justify-center'
+        )}
+      >
+        {open && (
+          <button
+            type="button"
+            onClick={onHome}
+            className="flex min-w-0 items-center gap-2.5"
+          >
+            <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-obsidian text-paper">
+              <Plus size={15} strokeWidth={3} />
+            </span>
+            <span className="truncate font-serif text-lg font-semibold">
+              {brandName || BRAND.name}
+            </span>
+          </button>
+        )}
+        <button
+          type="button"
+          onClick={onToggle}
+          aria-label={open ? 'Collapse sidebar' : 'Expand sidebar'}
+          className="flex h-9 w-9 items-center justify-center rounded-xl text-obsidian/55 transition-colors hover:bg-obsidian/[0.06] hover:text-obsidian"
         >
-          <div className="flex justify-between items-center mb-16">
-            <div className="caps-technical text-sage">Appointment Gateway</div>
-            <button onClick={onClose} className="p-2 hover:bg-muted rounded-full transition-colors">
-              <X size={20} />
-            </button>
+          {open ? <PanelLeftClose size={18} /> : <PanelLeftOpen size={18} />}
+        </button>
+      </div>
+
+      <div className={cn('px-3 pt-3', !open && 'px-2')}>
+        <button
+          type="button"
+          onClick={onNew}
+          className={cn(
+            'flex h-11 w-full items-center rounded-xl bg-paper text-sm font-medium text-obsidian shadow-sm ring-1 ring-obsidian/[0.08] transition hover:bg-paper/70',
+            open ? 'gap-3 px-3' : 'justify-center'
+          )}
+        >
+          <Plus size={17} />
+          {open && <span>{newLabel || 'New assessment'}</span>}
+        </button>
+        {open && clinicHref && (
+          <a
+            href={clinicHref}
+            className="mt-2 flex h-10 w-full items-center rounded-xl border border-obsidian/12 px-3 text-[11px] font-medium text-obsidian/65 transition hover:border-obsidian/25"
+          >
+            {clinicLabel || 'Clinic'}
+          </a>
+        )}
+      </div>
+
+      <div className="mt-5 min-h-0 flex-1 overflow-y-auto px-2 pb-4 custom-scrollbar">
+        {open && (
+          <div className="mb-2 px-3 text-[10px] font-semibold uppercase tracking-[0.18em] text-obsidian/35">
+            {recentLabel || 'Recent conversations'}
           </div>
+        )}
+        <div className="space-y-1">
+          {conversations.map((conversation) => (
+            <div
+              key={conversation.id}
+              className={cn(
+                'group relative flex items-center rounded-xl transition-colors',
+                activeId === conversation.id
+                  ? 'bg-paper shadow-sm ring-1 ring-obsidian/[0.08]'
+                  : 'hover:bg-obsidian/[0.04]',
+                open ? 'px-3' : 'justify-center px-0'
+              )}
+            >
+              <button
+                type="button"
+                onClick={() => onSelect(conversation.id)}
+                title={conversation.title}
+                className={cn(
+                  'flex h-11 min-w-0 flex-1 items-center text-left',
+                  open ? 'gap-3 pr-7' : 'justify-center'
+                )}
+              >
+                <MessageSquare
+                  size={16}
+                  className={cn(
+                    'shrink-0',
+                    activeId === conversation.id
+                      ? 'text-accent'
+                      : 'text-obsidian/40'
+                  )}
+                />
+                {open && (
+                  <span className="truncate text-[13px] text-obsidian/75">
+                    {conversation.title}
+                  </span>
+                )}
+              </button>
+              {open && (
+                <button
+                  type="button"
+                  onClick={(event) => {
+                    event.stopPropagation()
+                    onDelete(conversation.id)
+                  }}
+                  aria-label={`Delete ${conversation.title}`}
+                  title="Delete chat"
+                  className="absolute right-2 flex h-7 w-7 items-center justify-center rounded-lg text-obsidian/30 opacity-0 transition hover:bg-red-50 hover:text-red-500 focus-visible:opacity-100 group-hover:opacity-100"
+                >
+                  <Trash2 size={13} />
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+      </div>
 
-          <h2 className="text-5xl font-semibold mb-10 leading-tight">Secure your <br /><span className="text-luxury">residency.</span></h2>
-          
-          <div className="space-y-12">
-            <section>
-              <div className="caps-technical text-obsidian/40 mb-6">Select Specialist</div>
-              <div className="grid grid-cols-1 gap-4">
-                {['General Practitioner', 'Clinical Diagnostician', 'Advanced Surgeon'].map(s => (
-                  <button key={s} className="group p-6 border border-muted rounded-2xl flex items-center justify-between hover:bg-obsidian hover:text-paper transition-all">
-                    <span className="font-medium">{s}</span>
-                    <ArrowLeft size={16} className="rotate-180 opacity-0 group-hover:opacity-100 transition-all" />
-                  </button>
-                ))}
-              </div>
-            </section>
+      <div
+        className={cn(
+          'border-t border-obsidian/10 p-3',
+          !open && 'flex justify-center px-2'
+        )}
+      >
+        <AccountMenu collapsed={!open} />
+      </div>
+    </aside>
+  )
+}
 
-            <section>
-              <div className="caps-technical text-obsidian/40 mb-6">Schedule Time</div>
-              <div className="flex items-center gap-4 p-6 glass rounded-2xl border-sage/20">
-                <Calendar className="text-sage" size={24} />
-                <div>
-                   <div className="font-semibold text-obsidian">Earliest Available</div>
-                   <div className="text-xs text-slate-muted">Today at 14:30 · Diagnostic Lounge 02</div>
-                </div>
-              </div>
-            </section>
-
-            <button className="w-full py-6 bg-sage text-paper rounded-full caps-technical shadow-xl shadow-sage/20 hover:scale-[1.02] active:scale-100 transition-all">
-              Initialize Booking
+function AvatarDialog({ open, onClose, triageResult }) {
+  return (
+    <AnimatePresence>
+      {open && (
+        <>
+          <motion.button
+            type="button"
+            aria-label="Close avatar"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            onClick={onClose}
+            className="fixed inset-0 z-[200] bg-obsidian/45 backdrop-blur-sm"
+          />
+          <motion.div
+            initial={{ opacity: 0, scale: 0.96, y: 18 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.97, y: 12 }}
+            transition={{ type: 'spring', stiffness: 320, damping: 28 }}
+            className="fixed left-1/2 top-1/2 z-[201] h-[min(720px,88vh)] w-[min(440px,92vw)] -translate-x-1/2 -translate-y-1/2"
+          >
+            <button
+              type="button"
+              onClick={onClose}
+              className="absolute -right-3 -top-3 z-30 flex h-10 w-10 items-center justify-center rounded-full bg-paper text-obsidian shadow-xl transition hover:scale-105"
+            >
+              <X size={18} />
             </button>
-            <p className="text-center text-[10px] text-slate-muted uppercase tracking-widest leading-loose">
-              By initializing, you agree to our clinical safety protocols and HIPAA encrypted data storage requirements.
-            </p>
-          </div>
-        </motion.div>
-      </>
-    )}
-  </AnimatePresence>
-)
+            <AIVideoAvatar triageResult={triageResult} />
+          </motion.div>
+        </>
+      )}
+    </AnimatePresence>
+  )
+}
 
 export default function Triage() {
   const navigate = useNavigate()
-  const [messages, setMessages] = useState([])
+  const { user } = useAuth()
+  const { locale, t } = useLocale()
+  const { brand } = useBrand()
+  const localeRef = useRef(locale)
+  const brandRef = useRef(brand)
+  localeRef.current = locale
+  brandRef.current = brand
+  const initialConversations = useRef(null)
+  if (!initialConversations.current) {
+    initialConversations.current = loadConversations()
+  }
+
+  const [conversations, setConversations] = useState(
+    initialConversations.current
+  )
+  const [activeId, setActiveId] = useState(
+    initialConversations.current[0].id
+  )
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
-  const [triageResult, setTriageResult] = useState(null)
+  const [sendQueue, setSendQueue] = useState([])
   const [error, setError] = useState(null)
-  const [isBookingOpen, setIsBookingOpen] = useState(false)
-  const [isAvatarSpeaking, setIsAvatarSpeaking] = useState(false)
+  const [sidebarOpen, setSidebarOpen] = useState(true)
+  const [avatarOpen, setAvatarOpen] = useState(false)
   const bottomRef = useRef(null)
+  const conversationsRef = useRef(conversations)
+  const activeIdRef = useRef(activeId)
+  const loadingRef = useRef(false)
+  const queueRef = useRef([])
+  const userIdRef = useRef(null)
+
+  conversationsRef.current = conversations
+  activeIdRef.current = activeId
+  userIdRef.current = user?.id || null
+
+  const activeConversation = useMemo(
+    () =>
+      conversations.find((conversation) => conversation.id === activeId) ||
+      conversations[0],
+    [activeId, conversations]
+  )
+
+  // Pull cloud history once a session exists; fall back silently to local.
+  useEffect(() => {
+    if (!user?.id) return
+    let active = true
+
+    fetchConversations(user.id)
+      .then((cloud) => {
+        if (!active || !cloud) return
+        if (cloud.length === 0) {
+          // First cloud login — push the current local thread up.
+          const local = conversationsRef.current[0]
+          if (local && local.messages.some((m) => m.role === 'user')) {
+            void upsertConversation(user.id, local).then(() =>
+              Promise.all(
+                local.messages.map((message) =>
+                  saveMessage(user.id, local.id, message)
+                )
+              )
+            )
+          }
+          return
+        }
+        setConversations(cloud)
+        setActiveId(cloud[0].id)
+      })
+      .catch((cloudError) => {
+        console.warn('[cloud] history load failed', cloudError?.message)
+      })
+
+    return () => {
+      active = false
+    }
+  }, [user?.id])
 
   useEffect(() => {
-    const greeting = "Welcome to MediTriage. I'm your AI Clinical Liaison. I'm here to analyze your symptoms with structural precision. To begin our diagnostic assessment, please describe your primary symptoms and their duration."
-    setMessages([{
-      role: 'assistant',
-      content: greeting,
-    }])
-    
-    // Speak initial greeting after a short delay for iframe load
-    const timer = setTimeout(() => {
-      const avatarIframe = document.getElementById('beyond-presence-iframe')
-      if (avatarIframe && avatarIframe.contentWindow) {
-        setIsAvatarSpeaking(true)
-        avatarIframe.contentWindow.postMessage({
-          type: 'bp_speak',
-          text: greeting
-        }, 'https://bey.chat')
-        setTimeout(() => setIsAvatarSpeaking(false), 8000)
-      }
-    }, 3000)
-    
-    return () => clearTimeout(timer)
-  }, [])
+    try {
+      localStorage.setItem(HISTORY_KEY, JSON.stringify(conversations))
+    } catch {
+      // Chat remains usable when browser storage is unavailable.
+    }
+  }, [conversations])
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages])
+  }, [activeConversation?.messages, loading])
 
-  const triggerAvatarSpeech = (text) => {
-    const avatarIframe = document.getElementById('beyond-presence-iframe')
-    if (avatarIframe && avatarIframe.contentWindow) {
-      setIsAvatarSpeaking(true)
-      
-      // Remove triage result structural tags for speech
-      const speechText = text.replace(/---TRIAGE_RESULT---[\s\S]*?---END_TRIAGE---/g, '').trim()
-      
-      // Beyond Presence often uses specific commands. Let's try both common ones.
-      const targetOrigin = "https://bey.chat"
-      avatarIframe.contentWindow.postMessage({
-        type: 'bp_speak',
-        text: speechText
-      }, targetOrigin)
-      
-      avatarIframe.contentWindow.postMessage({
-        type: 'SAY_TEXT',
-        text: speechText
-      }, targetOrigin)
+  const updateActiveConversation = useCallback(
+    (updater) => {
+      setConversations((current) =>
+        current.map((conversation) =>
+          conversation.id === activeId
+            ? updater(conversation)
+            : conversation
+        )
+      )
+    },
+    [activeId]
+  )
 
-      // Auto-clear speaking state after a reasonable duration
-      const duration = Math.min(Math.max(speechText.length * 65, 4000), 15000)
-      setTimeout(() => setIsAvatarSpeaking(false), duration)
+  const startNewConversation = () => {
+    const next = createConversation(t('greeting'), t('newAssessment'))
+    setConversations((current) => [next, ...current])
+    setActiveId(next.id)
+    setInput('')
+    setSendQueue([])
+    queueRef.current = []
+    setError(null)
+    setLoading(false)
+    loadingRef.current = false
+  }
+
+  const selectConversation = (id) => {
+    setConversations((current) =>
+      current.map((conversation) =>
+        conversation.id === id
+          ? {
+              ...conversation,
+              messages: conversation.messages.map((message) => ({
+                ...message,
+                stream: false,
+              })),
+            }
+          : conversation
+      )
+    )
+    setActiveId(id)
+    setSendQueue([])
+    queueRef.current = []
+    setError(null)
+  }
+
+  const deleteConversation = (id) => {
+    const target = conversations.find((conversation) => conversation.id === id)
+    const hasContent = (target?.messages?.length || 0) > 1
+    if (
+      hasContent &&
+      !window.confirm('Delete this chat? This cannot be undone.')
+    ) {
+      return
+    }
+
+    if (id === activeId) {
+      setInput('')
+      setSendQueue([])
+      queueRef.current = []
+      setError(null)
+      setLoading(false)
+      loadingRef.current = false
+    }
+
+    setConversations((current) => {
+      const remaining = current.filter(
+        (conversation) => conversation.id !== id
+      )
+      if (id === activeId) {
+        const next = remaining[0] || createConversation()
+        setActiveId(next.id)
+        return remaining.length ? remaining : [next]
+      }
+      return remaining
+    })
+
+    if (userIdRef.current) {
+      deleteConversationRow(userIdRef.current, id).catch((cloudError) =>
+        console.warn('[cloud] delete failed', cloudError?.message)
+      )
     }
   }
 
-  const sendMessage = async () => {
-    if (!input.trim() || loading) return
+  const finishStreaming = useCallback(
+    (messageId) => {
+      updateActiveConversation((conversation) => ({
+        ...conversation,
+        messages: conversation.messages.map((message) =>
+          message.id === messageId ? { ...message, stream: false } : message
+        ),
+      }))
+    },
+    [updateActiveConversation]
+  )
 
-    const userMessage = input.trim()
-    setInput('')
-    setMessages(prev => [...prev, { role: 'user', content: userMessage }])
+  const pendingFollowUp = activeConversation?.pendingFollowUp || null
+  const multiSelections = activeConversation?.multiSelections || []
+
+  /** Best-effort cloud write; local state stays authoritative on failure. */
+  const syncConversation = useCallback(async (conversation, newMessages = []) => {
+    const userId = userIdRef.current
+    if (!userId || !conversation) return
+
+    try {
+      await upsertConversation(userId, conversation)
+      for (const message of newMessages) {
+        await saveMessage(userId, conversation.id, message)
+      }
+    } catch (syncError) {
+      console.warn('[cloud] sync failed', syncError?.message)
+    }
+  }, [])
+
+  const dispatchUserMessage = useCallback(async (userMessage) => {
+    const trimmed = userMessage.trim()
+    if (!trimmed) return
+
+    const conversationId = activeIdRef.current
+    const snapshot =
+      conversationsRef.current.find((item) => item.id === conversationId) ||
+      null
+    if (!snapshot) return
+
+    const hasUserMessage = snapshot.messages.some(
+      (message) => message.role === 'user'
+    )
+    const title = hasUserMessage
+      ? undefined
+      : trimmed.slice(0, 42) || 'New assessment'
+
+    const historyForApi = [
+      ...snapshot.messages
+        .filter(
+          (message) =>
+            message.role === 'user' || message.role === 'assistant'
+        )
+        .map((message) => ({
+          role: message.role,
+          content: message.content,
+        })),
+      { role: 'user', content: trimmed },
+    ]
+
+    const userMessageRow = {
+      id: makeId(),
+      role: 'user',
+      content: trimmed,
+      stream: false,
+    }
+
+    const withUser = {
+      ...snapshot,
+      ...(title ? { title } : {}),
+      pendingFollowUp: null,
+      multiSelections: [],
+      updatedAt: Date.now(),
+      messages: [
+        ...snapshot.messages.map((message) => ({
+          ...message,
+          stream: false,
+        })),
+        userMessageRow,
+      ],
+    }
+
+    conversationsRef.current = conversationsRef.current.map((item) =>
+      item.id === conversationId ? withUser : item
+    )
+    setConversations(conversationsRef.current)
+
+    void syncConversation(withUser, [
+      ...(hasUserMessage ? [] : snapshot.messages),
+      userMessageRow,
+    ])
+
+    loadingRef.current = true
     setLoading(true)
     setError(null)
 
     try {
-      if (IS_TEST_MODE || !FLOWISE_URL) {
-        await new Promise(resolve => setTimeout(resolve, 1500));
-        let mockResponse = "";
-        let mockTriage = null;
-        const userMsgCount = messages.filter(m => m.role === 'user').length + 1;
-
-        if (userMsgCount === 1) {
-          mockResponse = "Understood. Have you experienced any fever, or is there localized pain exceeding a level of 4/10?";
-        } else if (userMsgCount === 2) {
-          mockResponse = "Analysis complete. I have generated a structured triage assessment based on your clinical inputs.\n\n---TRIAGE_RESULT---\nURGENCY: CLINIC_48H\nSUMMARY: Mild localized symptoms consistent with non-acute inflammation.\nREASONING: Lack of systemic fever reduces urgency, though localized discomfort warrants professional physical exam within 48h.\nGUIDANCE: Secure a GP consultation. Monitor site for increased redness or pain levels.\nWATCH_FOR: Rapid swelling, high fever (>38.5C), or severe lethargy.\n---END_TRIAGE---";
-          mockTriage = parseTriageResult(mockResponse);
-        } else {
-          mockResponse = "I am monitoring for any updates. Should your symptoms change, please provide a detailed description immediately.";
-        }
-
-        if (mockTriage) setTriageResult(mockTriage);
-        setMessages(prev => [...prev, { role: 'assistant', content: mockResponse }]);
-        
-        // Trigger Avatar Speech in Test Mode
-        triggerAvatarSpeech(mockResponse);
-        return;
-      }
-
-      const res = await fetch(FLOWISE_URL, {
+      const response = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ question: userMessage, chatId: SESSION_ID }),
+        body: JSON.stringify({
+          messages: historyForApi,
+          locale: localeRef.current,
+          brandName: brandRef.current?.name,
+        }),
       })
-
-      if (!res.ok) throw new Error(`MediTriage is unable to reach the clinical engine: Error ${res.status}`)
-
-      const data = await res.json()
-      // Extract clean text from potential JSON response or structured output
-      let agentText = ""
-      if (typeof data === 'string') {
-        agentText = data
-      } else {
-        // Handle common Flowise/LangChain response formats
-        agentText = data.text || data.answer || data.response || data.output || JSON.stringify(data)
+      const data = await response.json().catch(() => ({}))
+      if (!response.ok) {
+        throw new Error(
+          data.error || `Clinical engine error ${response.status}`
+        )
       }
-      
-      // Secondary cleaning for markdown or JSON nested in strings
-      if (typeof agentText === 'string') {
-        const jsonMatch = agentText.match(/```json\s+([\s\S]*?)```/)
-        if (jsonMatch && jsonMatch[1]) {
-          try {
-            const parsed = JSON.parse(jsonMatch[1].trim())
-            agentText = parsed.text || parsed.answer || parsed.response || jsonMatch[1].trim()
-          } catch (e) {
-            agentText = jsonMatch[1].trim()
-          }
-        } else if (agentText.trim().startsWith('{')) {
-          try {
-            const parsed = JSON.parse(agentText.trim())
-            agentText = parsed.text || parsed.answer || parsed.response || agentText
-          } catch (e) {
-            // Not partial JSON, continue
-          }
-        }
+
+      const agentText =
+        typeof data.text === 'string' ? data.text : String(data.text || '')
+      if (!agentText.trim()) {
+        throw new Error('Empty response from clinical engine')
       }
 
       const parsed = parseTriageResult(agentText)
-      if (parsed) setTriageResult(parsed)
-      setMessages(prev => [...prev, { role: 'assistant', content: agentText }])
-      
-      // Trigger Avatar Speech
-      triggerAvatarSpeech(agentText)
-    } catch (err) {
-      setError(err.message)
-      setMessages(prev => [...prev, { role: 'assistant', content: "SYSTEM_ERROR: Neural link connection failed. Please verify API configuration." }])
+      const followUp = parseFollowUp(agentText)
+      const displayText = stripProtocolBlocks(agentText) || agentText
+      const assessment =
+        data.assessment && typeof data.assessment === 'object'
+          ? data.assessment
+          : null
+      const mergedResult = assessment?.urgency?.final
+        ? {
+            urgency: assessment.urgency.final,
+            summary: assessment.summary || parsed?.summary || '',
+            reasoning: assessment.reasoning || parsed?.reasoning || '',
+            guidance: assessment.guidance || parsed?.guidance || '',
+            watchFor: assessment.watchFor || parsed?.watchFor || '',
+            source: assessment.urgency.source,
+            overridden: assessment.urgency.overridden,
+          }
+        : parsed
+
+      const latest =
+        conversationsRef.current.find((item) => item.id === conversationId) ||
+        withUser
+
+      const assistantRow = {
+        id: makeId(),
+        role: 'assistant',
+        content: displayText,
+        stream: true,
+        showUrgency: Boolean(mergedResult?.urgency || parsed?.urgency),
+      }
+
+      const withAssistant = {
+        ...latest,
+        ...(title ? { title } : {}),
+        triageResult: mergedResult || latest.triageResult,
+        assessment: assessment || latest.assessment,
+        pendingFollowUp: followUp,
+        multiSelections: [],
+        updatedAt: Date.now(),
+        messages: [...latest.messages, assistantRow],
+      }
+
+      conversationsRef.current = conversationsRef.current.map((item) =>
+        item.id === conversationId ? withAssistant : item
+      )
+      setConversations(conversationsRef.current)
+
+      void syncConversation(withAssistant, [assistantRow])
+    } catch (requestError) {
+      const message =
+        requestError instanceof Error
+          ? requestError.message
+          : 'Unable to reach the clinical engine'
+      setError(message)
+
+      const latest =
+        conversationsRef.current.find((item) => item.id === conversationId) ||
+        withUser
+
+      const withError = {
+        ...latest,
+        pendingFollowUp: null,
+        multiSelections: [],
+        messages: [
+          ...latest.messages,
+          {
+            id: makeId(),
+            role: 'assistant',
+            content:
+              'I could not reach the clinical service. Please try again in a moment.',
+            stream: true,
+          },
+        ],
+      }
+
+      conversationsRef.current = conversationsRef.current.map((item) =>
+        item.id === conversationId ? withError : item
+      )
+      setConversations(conversationsRef.current)
     } finally {
+      loadingRef.current = false
       setLoading(false)
+
+      const remaining = queueRef.current
+      if (remaining.length > 0) {
+        const [next, ...rest] = remaining
+        queueRef.current = rest
+        setSendQueue(rest)
+        await dispatchUserMessage(next.text)
+      }
+    }
+  }, [])
+
+  const enqueueOrSend = useCallback((text) => {
+    const trimmed = String(text || '').trim()
+    if (!trimmed) return
+
+    if (loadingRef.current) {
+      const item = { id: makeId(), text: trimmed }
+      const next = [...queueRef.current, item]
+      queueRef.current = next
+      setSendQueue(next)
+      return
+    }
+
+    void dispatchUserMessage(trimmed)
+  }, [dispatchUserMessage])
+
+  const sendMessage = () => {
+    if (!input.trim()) return
+    const userMessage = input.trim()
+    setInput('')
+    enqueueOrSend(userMessage)
+  }
+
+  const handleQuickPrompt = (label) => {
+    enqueueOrSend(`I've been having ${label.toLowerCase()}.`)
+  }
+
+  const handleFollowUpSelect = (option) => {
+    if (!pendingFollowUp) return
+
+    if (pendingFollowUp.mode === 'multi') {
+      if (loadingRef.current) return
+      const catalog = pendingFollowUp.options
+      let next
+      if (option.exclusive) {
+        next = [option.id]
+      } else {
+        const withoutExclusive = multiSelections.filter(
+          (id) => !catalog.find((item) => item.id === id)?.exclusive
+        )
+        next = withoutExclusive.includes(option.id)
+          ? withoutExclusive.filter((id) => id !== option.id)
+          : [...withoutExclusive, option.id]
+      }
+      updateActiveConversation((conversation) => ({
+        ...conversation,
+        multiSelections: next,
+      }))
+      return
+    }
+
+    enqueueOrSend(option.label)
+  }
+
+  const continueMultiFollowUp = () => {
+    if (!pendingFollowUp || !multiSelections.length) return
+    const labels = multiSelections
+      .map(
+        (id) =>
+          pendingFollowUp.options.find((option) => option.id === id)?.label ||
+          id
+      )
+      .join(', ')
+    enqueueOrSend(labels)
+  }
+
+  const exportAssessment = async () => {
+    const assessment = activeConversation?.assessment
+    if (!assessment) return
+
+    try {
+      const response = await fetch('/api/assessment/export', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          assessment,
+          conversationId: activeConversation.id,
+        }),
+      })
+      const data = await response.json().catch(() => ({}))
+      if (!response.ok) {
+        throw new Error(data.error || 'Export failed')
+      }
+
+      const payload = data.assessment || assessment
+
+      if (userIdRef.current) {
+        saveAssessmentExport(
+          userIdRef.current,
+          activeConversation.id,
+          payload
+        ).catch((cloudError) =>
+          console.warn('[cloud] export log failed', cloudError?.message)
+        )
+      }
+
+      const blob = new Blob([JSON.stringify(payload, null, 2)], {
+        type: 'application/json',
+      })
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = `meditriage-assessment-${activeConversation.id.slice(0, 8)}.json`
+      link.click()
+      URL.revokeObjectURL(url)
+    } catch (exportError) {
+      const message =
+        exportError instanceof Error ? exportError.message : 'Export failed'
+      setError(message)
     }
   }
 
-  const URGENCY_LABELS = {
-    SELF_CARE: { label: 'Self-Care Protocol', color: '#171717', bg: '#f2572b10', bd: '#f2572b20', icon: <Plus size={16} /> },
-    CLINIC_48H: { label: 'Clinic Follow-up (48h)', color: '#171717', bg: '#F5F5F5', bd: '#E5E5E5', icon: <Clock size={16} /> },
-    HOSPITAL_NOW: { label: 'Urgent Hospital Admission', color: '#FFFFFF', bg: '#f2572b', bd: '#f2572b', icon: <Plus size={16} className="rotate-45" /> },
-    CALL_EMERGENCY: { label: 'CRITICAL: CALL EMERGENCY', color: '#FFFFFF', bg: '#171717', bd: '#171717', icon: <AlertCircle size={16} /> },
-  }
   return (
-    <div className="h-screen bg-paper flex flex-col font-sans text-obsidian overflow-hidden">
-      <BookingDrawer isOpen={isBookingOpen} onClose={() => setIsBookingOpen(false)} />
+    <div className="flex h-screen overflow-hidden bg-paper font-sans text-obsidian">
+      <ConversationSidebar
+        open={sidebarOpen}
+        conversations={conversations}
+        activeId={activeId}
+        onToggle={() => setSidebarOpen((value) => !value)}
+        onHome={() => navigate('/')}
+        onNew={startNewConversation}
+        onSelect={selectConversation}
+        onDelete={deleteConversation}
+        brandName={brand.name}
+        newLabel={t('newAssessment')}
+        recentLabel={t('recent')}
+        clinicHref={brand.slug ? `/o/${brand.slug}/clinic` : '/clinic'}
+        clinicLabel={t('clinicDashboard')}
+      />
 
-      {/* Header */}
-      <nav className="h-[72px] glass z-[150] px-6 lg:px-12 flex items-center justify-between border-b border-muted shrink-0">
-        <div className="flex items-center gap-6">
-          <button 
-            onClick={() => navigate(-1)}
-            className="p-2 hover:bg-muted rounded-full transition-colors text-obsidian"
-          >
-            <ArrowLeft size={20} />
-          </button>
-          <div className="flex items-center gap-3">
-             <div className="w-7 h-7 rounded-full bg-obsidian flex items-center justify-center text-paper cursor-pointer" onClick={() => navigate('/')}>
-                <Plus size={14} strokeWidth={3} />
-             </div>
-             <span 
-                onClick={() => navigate('/')} 
-                className="font-serif text-xl font-semibold tracking-tight cursor-pointer hover:text-sage transition-colors"
-             >
-                {BRAND.name}
-             </span>
-          </div>
-        </div>
-
-        <div className="hidden lg:flex items-center gap-8">
-            <div className="flex items-center gap-2 px-4 py-1.5 bg-muted rounded-full border border-dark/5">
-                <div className="w-1.5 h-1.5 rounded-full bg-sage animate-clinical" />
-                <span className="caps-technical text-[9px]">Neural Clinical Link Active</span>
-            </div>
-            <div className="h-6 w-[1px] bg-muted" />
-            <div className="flex items-center gap-3">
-                <div className="text-right">
-                    <div className="caps-technical text-sage text-[8px]">Session Protocol</div>
-                    <div className="text-[10px] font-bold text-obsidian/40">{SESSION_ID.slice(0, 12)}</div>
-                </div>
-            </div>
-        </div>
-
-        <div className="flex items-center gap-4">
-            <button 
-                onClick={() => setIsBookingOpen(true)}
-                className="px-6 py-2 bg-obsidian text-paper rounded-full caps-technical text-[10px] hover:bg-sage transition-all"
+      <main className="relative flex min-w-0 flex-1 flex-col bg-paper">
+        <header className="flex h-16 shrink-0 items-center justify-between border-b border-obsidian/10 px-4 sm:px-6">
+          <div className="flex min-w-0 items-center gap-2 sm:gap-3">
+            <button
+              type="button"
+              onClick={() => navigate(-1)}
+              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl text-obsidian/55 transition hover:bg-muted hover:text-obsidian"
             >
-                Reserve Consultation
+              <ArrowLeft size={18} />
             </button>
-        </div>
-      </nav>
-
-      {/* Main Framework */}
-      <main className="flex-1 max-w-[1440px] mx-auto w-full flex flex-col lg:grid lg:grid-cols-[400px_1fr] gap-8 overflow-hidden pt-6 pb-6 px-4 lg:px-10 relative">
-        
-        {/* Left Column: Avatar Only */}
-        <aside className="flex flex-col items-center justify-center h-full relative">
-           <div className="w-full max-w-[340px]">
-              <AIVideoAvatar 
-                agentId={BEY_AGENT_ID} 
-                sessionId={SESSION_ID} 
-                isSpeaking={isAvatarSpeaking}
-              />
-           </div>
-           
-           <AnimatePresence>
-             {isAvatarSpeaking && (
-               <motion.div
-                 initial={{ opacity: 0, y: 10 }}
-                 animate={{ opacity: 1, y: 0 }}
-                 exit={{ opacity: 0, y: 10 }}
-                 className="absolute bottom-10 left-1/2 -translate-x-1/2 bg-accent/90 backdrop-blur-md text-paper px-6 py-3 rounded-full shadow-xl border border-white/20 whitespace-nowrap z-50 flex items-center gap-3"
-               >
-                 <div className="flex gap-1">
-                   {[0, 1, 2].map((i) => (
-                     <motion.div
-                       key={i}
-                       animate={{ height: [8, 16, 8] }}
-                       transition={{ repeat: Infinity, duration: 0.5, delay: i * 0.1 }}
-                       className="w-0.5 bg-paper rounded-full"
-                     />
-                   ))}
-                 </div>
-                 <span className="caps-technical text-[10px] font-bold">AI Clinical Liaison is on the way...</span>
-               </motion.div>
-             )}
-           </AnimatePresence>
-        </aside>
-
-
-        {/* Right Column: Clinical Chat (Expanded) */}
-        <section className="flex flex-col h-full bg-white border border-muted rounded-[2.5rem] overflow-hidden shadow-sm relative lg:mb-4">
-           <div className="p-6 border-b flex items-center justify-between glass sticky top-0 z-10">
-              <div className="flex items-center gap-4">
-                 <div className="w-10 h-10 rounded-full bg-muted flex items-center justify-center">
-                    <MessageCircle size={20} className="text-obsidian" />
-                 </div>
-                 <div>
-                    <div className="font-semibold text-obsidian">Assessment Transcript</div>
-                    <div className="text-[10px] caps-technical text-sage">Secure Tunneling Active</div>
-                 </div>
+            <button
+              type="button"
+              onClick={() => setSidebarOpen((value) => !value)}
+              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl text-obsidian/55 transition hover:bg-muted hover:text-obsidian lg:hidden"
+            >
+              <Menu size={18} />
+            </button>
+            <div className="min-w-0">
+              <div className="truncate text-sm font-semibold">
+                {activeConversation?.title || 'New assessment'}
               </div>
-              <div className="flex items-center gap-2 px-3 py-1 bg-sage/10 rounded-full">
-                 <span className="w-1.5 h-1.5 rounded-full bg-sage" />
-                 <span className="text-[9px] caps-technical text-sage">LIVE ASSESSMENT</span>
+              <div className="flex items-center gap-1.5 text-[10px] text-obsidian/35">
+                <span className="h-1.5 w-1.5 rounded-full bg-accent" />
+                Private medical assistant
               </div>
-           </div>
+            </div>
+          </div>
 
-           {/* Chat Viewport */}
-           <div className="flex-1 overflow-y-auto p-8 flex flex-col gap-8 custom-scrollbar">
-              {messages.map((msg, i) => (
-                <MessageBubble key={i} role={msg.role} content={msg.content} />
-              ))}
-              
-              {loading && (
-                <div className="self-start flex gap-2 p-6 bg-paper border border-muted rounded-[1.5rem] rounded-tl-none">
-                  {[0,1,2].map(i => (
-                    <motion.div 
-                      key={i}
-                      animate={{ opacity: [0.3, 1, 0.3] }}
-                      transition={{ repeat: Infinity, duration: 1.5, delay: i * 0.2 }}
-                      className="w-2 h-2 rounded-full bg-sage"
-                    />
-                  ))}
+          <div className="flex items-center gap-2 sm:gap-3">
+            <LanguageToggle />
+            <ThemeToggle />
+            {activeConversation?.assessment?.urgency?.final && (
+              <button
+                type="button"
+                onClick={exportAssessment}
+                title="Export clinician-ready assessment"
+                className="flex items-center gap-2 rounded-full border border-obsidian/15 bg-paper px-3 py-2 text-xs font-medium text-obsidian/70 transition hover:border-obsidian/30 hover:text-obsidian sm:px-3.5"
+              >
+                <Download size={15} />
+                <span className="hidden sm:inline">{t('exportAssessment')}</span>
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => setAvatarOpen(true)}
+              className="flex items-center gap-2 rounded-full bg-obsidian px-3.5 py-2 text-xs font-medium text-paper transition hover:bg-accent sm:px-4"
+            >
+              <Video size={15} />
+              <span className="hidden sm:inline">{t('openAvatar')}</span>
+            </button>
+          </div>
+        </header>
+
+        <section className="min-h-0 flex-1 overflow-y-auto custom-scrollbar">
+          <div className="mx-auto flex min-h-full w-full max-w-[780px] flex-col px-5 pb-56 pt-10 sm:px-8 sm:pt-14">
+            <div className="mb-10">
+              <div className="mb-3 text-[10px] font-semibold uppercase tracking-[0.2em] text-accent">
+                {t('secureClinical')}
+              </div>
+              <h1 className="font-serif text-3xl font-medium tracking-tight sm:text-4xl">
+                {t('howCanHelp')}
+              </h1>
+              <p className="mt-3 max-w-xl text-sm leading-6 text-obsidian/45">
+                {t('helpSub')}
+              </p>
+            </div>
+
+            <div className="flex flex-col gap-9">
+              {activeConversation?.messages.map((message) => (
+                <div key={message.id} className="flex flex-col gap-3">
+                  <MessageBubble
+                    role={message.role}
+                    content={message.content}
+                    stream={message.stream}
+                    onStreamComplete={() => finishStreaming(message.id)}
+                  />
+                  {message.showUrgency &&
+                    activeConversation?.triageResult?.urgency && (
+                      <>
+                        <UrgencyBadge
+                          urgency={activeConversation.triageResult.urgency}
+                          overridden={
+                            activeConversation.triageResult.overridden
+                          }
+                          source={activeConversation.triageResult.source}
+                        />
+                        <CareRoutingCard
+                          urgency={activeConversation.triageResult.urgency}
+                          assessment={activeConversation.assessment}
+                          conversationId={activeConversation.id}
+                          title={activeConversation.title}
+                          orgSlug={brand.slug || 'demo-clinic'}
+                        />
+                      </>
+                    )}
                 </div>
+              ))}
+
+              {!loading && pendingFollowUp && (
+                <TriageOptionCard
+                  title={pendingFollowUp.prompt}
+                  hint={
+                    pendingFollowUp.mode === 'multi'
+                      ? 'Select all that apply, then continue — or type your own answer below'
+                      : 'Tap an option — or type your own answer below'
+                  }
+                  options={pendingFollowUp.options}
+                  mode={pendingFollowUp.mode}
+                  selectedIds={multiSelections}
+                  onSelect={handleFollowUpSelect}
+                  onContinue={
+                    pendingFollowUp.mode === 'multi'
+                      ? continueMultiFollowUp
+                      : undefined
+                  }
+                  continueLabel="Continue"
+                />
+              )}
+
+              {loading && (
+                <motion.div
+                  initial={{ opacity: 0, y: 6 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className="flex items-center gap-4"
+                >
+                  <div className="flex h-7 w-7 items-center justify-center rounded-full bg-obsidian text-paper">
+                    <Plus size={13} strokeWidth={3} />
+                  </div>
+                  <div className="flex gap-1.5">
+                    {[0, 1, 2].map((index) => (
+                      <motion.span
+                        key={index}
+                        animate={{ opacity: [0.2, 1, 0.2] }}
+                        transition={{
+                          repeat: Infinity,
+                          duration: 1.2,
+                          delay: index * 0.18,
+                        }}
+                        className="h-1.5 w-1.5 rounded-full bg-obsidian/45"
+                      />
+                    ))}
+                  </div>
+                </motion.div>
               )}
 
               {error && (
-                <div className="p-4 bg-red-50 border border-red-100 rounded-xl text-red-700 text-xs font-medium caps-technical">
-                    {error}
+                <div className="rounded-xl border border-red-100 bg-red-50 px-4 py-3 text-xs text-red-700">
+                  {error}
                 </div>
               )}
               <div ref={bottomRef} />
-           </div>
-
-           {/* Input Controls */}
-           <div className="p-6 border-t bg-paper/50">
-              <div className="relative group">
-                 <textarea
-                   value={input}
-                   onChange={e => setInput(e.target.value)}
-                   onKeyDown={e => {
-                     if (e.key === 'Enter' && !e.shiftKey) {
-                       e.preventDefault()
-                       sendMessage()
-                     }
-                   }}
-                   placeholder="Initiate clinical description..."
-                   disabled={loading}
-                   className="w-full bg-white border border-muted rounded-2xl py-5 px-6 pr-24 focus:outline-none focus:ring-1 focus:ring-sage focus:border-sage transition-all resize-none shadow-sm text-md font-medium placeholder:text-obsidian/20"
-                   rows={1}
-                 />
-                 <button
-                   onClick={sendMessage}
-                   disabled={loading || !input.trim()}
-                   className="absolute right-3 top-1/2 -translate-y-1/2 p-4 bg-obsidian text-paper rounded-xl hover:bg-sage transition-all disabled:opacity-20 disabled:cursor-not-allowed group-hover:scale-105"
-                 >
-                   <Send size={20} />
-                 </button>
-              </div>
-              <div className="mt-4 flex items-center justify-center gap-8 opacity-40">
-                  <div className="flex items-center gap-2">
-                     <ShieldCheck size={12} />
-                     <span className="text-[9px] caps-technical">HIPAA COMPLIANT</span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                     <Info size={12} />
-                     <span className="text-[9px] caps-technical">NON-DIAGNOSTIC AI</span>
-                  </div>
-              </div>
-           </div>
+            </div>
+          </div>
         </section>
 
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 z-20 bg-gradient-to-t from-paper via-paper to-transparent px-4 pb-4 pt-14 sm:px-8 sm:pb-6">
+          <div className="pointer-events-auto mx-auto w-full max-w-[760px]">
+            <MediTriageChatInput
+              value={input}
+              onChange={setInput}
+              onSubmit={sendMessage}
+              busy={loading}
+              queue={sendQueue}
+              showQuickPrompts={!pendingFollowUp}
+              placeholder={
+                pendingFollowUp
+                  ? 'Or type your own answer...'
+                  : t('placeholder')
+              }
+              onQuickPrompt={handleQuickPrompt}
+            />
+          </div>
+        </div>
       </main>
 
+      <AvatarDialog
+        open={avatarOpen}
+        onClose={() => setAvatarOpen(false)}
+        triageResult={activeConversation?.triageResult}
+      />
+
       <style>{`
-        .custom-scrollbar::-webkit-scrollbar {
-          width: 4px;
-        }
-        .custom-scrollbar::-webkit-scrollbar-track {
-          background: transparent;
-        }
+        .custom-scrollbar::-webkit-scrollbar { width: 5px; }
+        .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
         .custom-scrollbar::-webkit-scrollbar-thumb {
-          background: var(--border);
-          border-radius: 10px;
+          background: rgba(23, 23, 23, 0.12);
+          border-radius: 999px;
         }
       `}</style>
     </div>

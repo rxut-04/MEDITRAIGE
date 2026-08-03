@@ -49,7 +49,7 @@ const darkPalette = [
 ];
 
 // Updated blend modes for better visibility in light mode
-const blendModes = [
+const lightBlendModes = [
   'overlay',
   'soft-light',
   'color-dodge',
@@ -57,11 +57,13 @@ const blendModes = [
   'lighter',
 ];
 
+const darkBlendModes = ['soft-light', 'overlay', 'multiply'];
+
 const ArtisticBackground = () => {
   const canvasRef = useRef(null);
   const themeContext = useTheme();
   // Safely handle cases where next-themes provider isn't present
-  const theme = themeContext?.theme || 'light';
+  const theme = themeContext?.resolvedTheme || themeContext?.theme || 'light';
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -84,7 +86,9 @@ const ArtisticBackground = () => {
     // Draw paint-like shapes
     const draw = () => {
       ctx.clearRect(0, 0, canvas.width, canvas.height);
-      const palette = theme === 'dark' ? darkPalette : lightPalette;
+      const isDark = theme === 'dark';
+      const palette = isDark ? darkPalette : lightPalette;
+      const blends = isDark ? darkBlendModes : lightBlendModes;
 
       // Draw more shapes for better coverage
       for (let i = 0; i < 15; i++) {
@@ -94,11 +98,10 @@ const ArtisticBackground = () => {
           size: 250 + Math.random() * 250,
           color: palette[Math.floor(Math.random() * palette.length)],
           rotation: Math.random() * Math.PI * 2,
-          alpha:
-            theme === 'dark'
-              ? 0.15 + Math.random() * 0.15
-              : 0.35 + Math.random() * 0.15,
-          blend: blendModes[Math.floor(Math.random() * blendModes.length)],
+          alpha: isDark
+            ? 0.12 + Math.random() * 0.12
+            : 0.35 + Math.random() * 0.15,
+          blend: blends[Math.floor(Math.random() * blends.length)],
         });
       }
 
@@ -111,7 +114,7 @@ const ArtisticBackground = () => {
         const pattern = ctx.createPattern(img, 'repeat');
         if (pattern) {
           ctx.save();
-          ctx.globalAlpha = theme === 'dark' ? 0.05 : 0.1;
+          ctx.globalAlpha = isDark ? 0.05 : 0.1;
           ctx.globalCompositeOperation = 'overlay';
           ctx.fillStyle = pattern;
           ctx.fillRect(0, 0, window.innerWidth, window.innerHeight);
@@ -131,7 +134,7 @@ const ArtisticBackground = () => {
       className="pointer-events-none fixed inset-0 w-full h-full -z-10 select-none"
       style={{
         display: 'block',
-        mixBlendMode: theme === 'dark' ? 'overlay' : 'multiply',
+        mixBlendMode: theme === 'dark' ? 'soft-light' : 'multiply',
       }}
       aria-hidden="true"
     />

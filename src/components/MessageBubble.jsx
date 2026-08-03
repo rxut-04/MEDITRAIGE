@@ -1,50 +1,98 @@
-import React from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { motion } from 'motion/react'
 import { Plus } from 'lucide-react'
 import { cn } from '../lib/utils'
 
-export default function MessageBubble({ role, content }) {
+export default function MessageBubble({
+  role,
+  content,
+  stream = false,
+  onStreamComplete,
+}) {
   const isUser = role === 'user'
+  const displayContent = useMemo(
+    () =>
+      content
+        .replace(/---FOLLOW_UP---[\s\S]*?---END_FOLLOW_UP---/gi, '')
+        .replace(/---TRIAGE_RESULT---[\s\S]*?---END_TRIAGE---/gi, '')
+        .trim(),
+    [content]
+  )
+  const [visibleLength, setVisibleLength] = useState(
+    stream && !isUser ? 0 : displayContent.length
+  )
+  const completedRef = useRef(false)
+  const onCompleteRef = useRef(onStreamComplete)
+  onCompleteRef.current = onStreamComplete
 
-  // Parse and clean triage result blocks from display
-  const displayContent = content
-    .replace(/---TRIAGE_RESULT---[\s\S]*?---END_TRIAGE---/, '')
-    .trim()
+  useEffect(() => {
+    completedRef.current = false
+
+    if (isUser || !stream) {
+      setVisibleLength(displayContent.length)
+      return
+    }
+
+    if (!displayContent.length) {
+      setVisibleLength(0)
+      return
+    }
+
+    setVisibleLength(0)
+    const chunkSize = Math.max(1, Math.ceil(displayContent.length / 180))
+    const timer = window.setInterval(() => {
+      setVisibleLength((current) =>
+        Math.min(current + chunkSize, displayContent.length)
+      )
+    }, 14)
+
+    return () => window.clearInterval(timer)
+  }, [displayContent, isUser, stream])
+
+  // Notify parent only after paint — never inside a setState updater.
+  useEffect(() => {
+    if (isUser || !stream) return
+    if (visibleLength < displayContent.length) return
+    if (!displayContent.length || completedRef.current) return
+    completedRef.current = true
+    onCompleteRef.current?.()
+  }, [displayContent.length, isUser, stream, visibleLength])
 
   if (!displayContent) return null
 
+  const isTyping = !isUser && stream && visibleLength < displayContent.length
+
   return (
-    <motion.div 
-      initial={{ opacity: 0, y: 10, scale: 0.98 }}
-      animate={{ opacity: 1, y: 0, scale: 1 }}
+    <motion.article
+      initial={{ opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
       className={cn(
-        "flex flex-col gap-1.5 max-w-[85%] lg:max-w-[70%]",
-        isUser ? "self-end items-end" : "self-start"
+        'w-full flex',
+        isUser ? 'justify-end' : 'justify-start'
       )}
     >
-      {!isUser && (
-        <div className="flex items-center gap-2 px-1 mb-0.5">
-          <div className="w-5 h-5 rounded-full bg-obsidian flex items-center justify-center text-paper scale-75">
-             <Plus size={10} strokeWidth={4} />
+      {isUser ? (
+        <div className="max-w-[82%] rounded-[1.35rem] rounded-br-md bg-obsidian px-5 py-3 text-[15px] leading-6 text-paper shadow-sm">
+          <p className="whitespace-pre-wrap">{displayContent}</p>
+        </div>
+      ) : (
+        <div className="flex w-full max-w-[680px] gap-4">
+          <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-obsidian text-paper">
+            <Plus size={13} strokeWidth={3} />
           </div>
-          <span className="caps-technical text-[9px] text-accent">Clinical Intelligence</span>
+          <div className="min-w-0 flex-1">
+            <div className="mb-2 text-[10px] font-semibold uppercase tracking-[0.18em] text-accent">
+              Clinical Intelligence
+            </div>
+            <p className="whitespace-pre-wrap text-[15px] leading-7 text-obsidian/85">
+              {displayContent.slice(0, visibleLength)}
+              {isTyping && (
+                <span className="ml-0.5 inline-block h-4 w-[2px] animate-pulse bg-accent align-middle" />
+              )}
+            </p>
+          </div>
         </div>
       )}
-      
-      <div className={cn(
-        "px-6 py-4 text-md leading-relaxed transition-all",
-        isUser 
-          ? "bg-obsidian text-paper rounded-[1.5rem] rounded-tr-none shadow-xl shadow-obsidian/5" 
-          : "bg-white text-obsidian border border-muted rounded-[1.5rem] rounded-tl-none shadow-sm"
-      )}>
-        <p className={cn("whitespace-pre-wrap", !isUser && "font-medium")}>
-          {displayContent}
-        </p>
-      </div>
-      
-      <div className={cn("text-[9px] caps-technical text-obsidian/20 px-2 mt-1")}>
-        {isUser ? "Transmitting" : "Response Encrypted"}
-      </div>
-    </motion.div>
+    </motion.article>
   )
 }

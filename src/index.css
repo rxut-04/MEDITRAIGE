@@ -1,6 +1,8 @@
 @import url('https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400&display=swap');
 @import "tailwindcss";
 
+@custom-variant dark (&:where(.dark, .dark *));
+
 @theme {
   --font-serif: 'Instrument Serif', Georgia, serif;
   --font-sans: 'Inter', system-ui, sans-serif;
@@ -35,12 +37,35 @@
   --border: #E5E5E5;
 }
 
+/* Class-based dark theme (next-themes sets .dark on <html>) */
+.dark {
+  --color-paper: #0a0a0a;
+  --color-obsidian: #ffffff;
+  --color-slate-muted: #a3a3a3;
+  --color-border: #2a2a2a;
+  --color-muted: #171717;
+
+  --background: #0a0a0a;
+  --foreground: #ffffff;
+  --primary: #ffffff;
+  --primary-foreground: #0a0a0a;
+  --muted: #171717;
+  --muted-foreground: #a3a3a3;
+  --border: #2a2a2a;
+}
+
 @layer base {
   * {
     @apply border-border;
   }
+  html {
+    color-scheme: light;
+  }
+  html.dark {
+    color-scheme: dark;
+  }
   body {
-    @apply font-sans antialiased bg-paper text-obsidian selection:bg-sage/20 selection:text-obsidian;
+    @apply font-sans antialiased bg-paper text-obsidian selection:bg-sage/20 selection:text-obsidian transition-colors duration-300;
   }
   h1, h2, h3, h4, h5, h6 {
     @apply font-serif;
@@ -56,7 +81,7 @@
     @apply font-sans text-[10px] font-bold tracking-[0.2em] uppercase;
   }
   .glass {
-    @apply backdrop-blur-md bg-white/70 border border-white/20;
+    @apply backdrop-blur-md border bg-paper/70 border-obsidian/10;
   }
 }
 
